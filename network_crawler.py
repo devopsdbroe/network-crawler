@@ -130,18 +130,22 @@ def store_ips(ip_list):
 
         # Create table if it doesn't exist
         cursor.execute(
-            """CREATE TABLE IF NOT EXISTS active_ips (ip TEXT, scanned_at TIMESTAMP)"""
+            """CREATE TABLE IF NOT EXISTS active_ips (ip TEXT UNIQUE, scanned_at TIMESTAMP)"""
         )
 
         # Insert each active IP address into the database
         for ip in ip_list:
-            cursor.execute(
-                "INSERT INTO active_ips (ip, scanned_at) VALUES (?, ?)",
-                (ip, time.time()),
-            )
+            try:
+                cursor.execute(
+                    "INSERT INTO active_ips (ip, scanned_at) VALUES (?, ?)",
+                    (ip, time.time()),
+                )
+            except sqlite3.IntegrityError:
+                # Handle duplicate IP inseration attempt
+                logging.warning(f"Duplicate IP not inserted: {ip}")
+
 
     conn.commit()
-    conn.close()
 
 
 def main():
