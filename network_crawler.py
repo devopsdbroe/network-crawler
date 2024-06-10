@@ -49,6 +49,7 @@ if not is_admin():
 # Function to ping an IP address
 def ping_ip(ip):
     try:
+        logging.info(f"Pinging IP: {ip}")
         output = subprocess.check_output(
             ["ping", PING_PARAM, "1", TIMEOUT_PARAM, "1", str(ip)],
             stderr=subprocess.STDOUT,
@@ -74,6 +75,7 @@ def ping_ip(ip):
 def get_arp_table(network):
     arp_table = []
     try:
+        logging.info("Retrieving ARP table")
         arp_request = ARP(pdst=str(network))
         broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
         arp_request_broadcast = broadcast / arp_request
@@ -87,6 +89,7 @@ def get_arp_table(network):
 # Function to get OS and device type using psutil
 def get_os_device_info(ip):
     try:
+        logging.info(f"Getting OS and device info for IP: {ip}")
         for conn in psutil.net_connections(kind='inet'):
             if conn.laddr.ip == ip:
                 return platform.system(), conn.pid
@@ -97,6 +100,7 @@ def get_os_device_info(ip):
 # Function to get hostname
 def get_hostname(ip):
     try:
+        logging.info(f"Getting hostname for IP: {ip}")
         return socket.gethostbyaddr(ip)[0]
     except socket.herror:
         return None
@@ -106,8 +110,9 @@ def get_open_ports(ip):
     open_ports = []
     service_banner = None
     try:
+        logging.info(f"Scanning open ports for IP: {ip}")
         nm = nmap.PortScanner()
-        nm.scan(ip, '1-1024')
+        nm.scan(ip, '22, 80, 443', arguments='-T4 --max-retries 1 --host-timeout 30s') # Limit port scanning for demostration purposes
         for proto in nm[ip].all_protocols():
             lport = nm[ip][proto].keys()
             for port in lport:
@@ -122,6 +127,7 @@ def scan_network(network):
     results = []
 
     try:
+        logging.info(f"Scanning network: {network}")
         net = ipaddress.ip_network(network)
     except ValueError:
         logging.error("Invalid network address provided.")
@@ -197,6 +203,7 @@ def store_ips(ip_list):
 
         for ip_info in ip_list:
             try:
+                logging.info(f"Storing IP info: {ip_info['ip']}")
                 cursor.execute("""
                     INSERT INTO active_ips (
                         ip, is_active, os, hostname, latency, mac_address,
