@@ -1,4 +1,24 @@
-logs/
+# Python
+__pycache__/
+*.pyc
+instance/
 
-# Ignore SQLite database file
-network_scanner.db
+# Docker
+*.log
+*.pid
+*.seed
+*.sock
+*.coverage
+*.cache
+*.pyo
+*.pyd
+*.db
+
+# Node
+node_modules/
+build/
+dist/
+
+# IDEs
+.vscode/
+.idea/
