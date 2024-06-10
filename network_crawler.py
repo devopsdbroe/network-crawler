@@ -8,6 +8,8 @@ import os
 import socket
 import psutil
 import nmap
+import sys
+import ctypes
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from scapy.all import ARP, Ether, srp
@@ -33,6 +35,16 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+def is_admin():
+    try:
+        return os.getuid() == 0
+    except AttributeError:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    
+if not is_admin():
+    logging.error("This script must be run as root. Exiting.")
+    sys.exit(1)
 
 # Function to ping an IP address
 def ping_ip(ip):
