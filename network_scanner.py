@@ -1,50 +1,17 @@
-import ipaddress
-import subprocess
-import sqlite3
-import time
 import platform
-import logging
-import os
+import subprocess
 import socket
 import psutil
 import nmap
-import sys
-import ctypes
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+import logging
 from scapy.all import ARP, Ether, srp
 
-# Constants for cross-platform compatibility
-PING_PARAM = "-n" if platform.system().lower() == "windows" else "-c"
-TIMEOUT_PARAM = "-w" if platform.system().lower() == "windows" else "-W"
-WINDOWS_SUCCESS = "Received = 1"
-UNIX_SUCCESS = ["1 packets transmitted, 1 received", "1 received"]
-DB_NAME = "network_scanner.db"
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import ipaddress
 
-# Define log directory and ensure it exists
-log_directory = "logs"
-if not os.path.exists(log_directory):
-    os.makedirs(log_directory)
-
-# Configure logging
-log_filename = os.path.join(log_directory, datetime.now().strftime("network_scan%Y%m%d_%H%M%S.log"))
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_filename),
-        logging.StreamHandler()
-    ]
-)
-
-def is_admin():
-    try:
-        return os.getuid() == 0
-    except AttributeError:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    
-if not is_admin():
-    logging.error("This script must be run as root. Exiting.")
-    sys.exit(1)
+from constants import PING_PARAM, TIMEOUT_PARAM, WINDOWS_SUCCESS, UNIX_SUCCESS
+from utils import is_admin
 
 # Function to ping an IP address
 def ping_ip(ip):
@@ -112,7 +79,7 @@ def get_open_ports(ip):
     try:
         logging.info(f"Scanning open ports for IP: {ip}")
         nm = nmap.PortScanner()
-        nm.scan(ip, '22, 80, 443', arguments='-T4 --max-retries 1 --host-timeout 30s') # Limit port scanning for demostration purposes
+        nm.scan(ip, '22, 80, 443', arguments='-T4 --max-retries 1 --host-timeout 30s') # Limit port scanning for demonstration purposes
         for proto in nm[ip].all_protocols():
             lport = nm[ip][proto].keys()
             for port in lport:
@@ -180,65 +147,3 @@ def scan_network(network):
         results.append(ip_info)
 
     return results
-
-# Function to store IPs in SQLite database
-def store_ips(ip_list):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS active_ips (
-                ip TEXT UNIQUE,
-                is_active BOOLEAN,
-                os TEXT,
-                hostname TEXT,
-                latency REAL,
-                mac_address TEXT,
-                device_type TEXT,
-                open_ports TEXT,
-                service_banner TEXT,
-                device_registration_time TEXT,
-                scan_time TIMESTAMP
-            )
-        """)
-
-        for ip_info in ip_list:
-            try:
-                logging.info(f"Storing IP info: {ip_info['ip']}")
-                cursor.execute("""
-                    INSERT INTO active_ips (
-                        ip, is_active, os, hostname, latency, mac_address,
-                        device_type, open_ports, service_banner,
-                        device_registration_time, scan_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    ip_info['ip'], ip_info['is_active'], ip_info['os'],
-                    ip_info['hostname'], ip_info['latency'], ip_info['mac_address'],
-                    ip_info['device_type'], ','.join(map(str, ip_info['open_ports'])),
-                    ip_info['service_banner'], ip_info['device_registration_time'],
-                    ip_info['scan_time']
-                ))
-            except sqlite3.IntegrityError:
-                logging.warning(f"Duplicate IP not inserted: {ip_info['ip']}")
-
-        conn.commit()
-
-def get_stored_ips():
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM active_ips")
-        rows = cursor.fetchall()
-    return rows
-
-def main():
-    try:
-        network = input("Enter the network/CIDR block (e.g., 192.168.1.0/24): ")
-        ip_list = scan_network(network)
-        store_ips(ip_list)
-        logging.info(f"Number of IPs found: {len(ip_list)}")
-        logging.info(f"Active IPs: {ip_list}")
-    except Exception as e:
-        logging.error("An error occurred during the execution of the script", exc_info=True)
-        raise
-
-if __name__ == "__main__":
-    main()
