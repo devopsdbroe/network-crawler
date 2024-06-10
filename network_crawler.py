@@ -5,14 +5,18 @@ import time
 import platform
 import logging
 import os
+import socket
+import psutil
+import nmap
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from scapy.all import ARP, Ether, srp
 
-# Constants for cross-platfrom compatibility
+# Constants for cross-platform compatibility
 PING_PARAM = "-n" if platform.system().lower() == "windows" else "-c"
 TIMEOUT_PARAM = "-w" if platform.system().lower() == "windows" else "-W"
 WINDOWS_SUCCESS = "Received = 1"
-UNIX_SUCCESS = ["1 packets transmittedd, 1 received", "1 received"]
+UNIX_SUCCESS = ["1 packets transmitted, 1 received", "1 received"]
 DB_NAME = "network_scanner.db"
 
 # Define log directory and ensure it exists
@@ -29,7 +33,6 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-
 
 # Function to ping an IP address
 def ping_ip(ip):
@@ -56,97 +59,156 @@ def ping_ip(ip):
 
 
 # Function to get ARP table entries
-def get_arp_table():
+def get_arp_table(network):
     arp_table = []
-
     try:
-        # Determine the arp command based on operating system
-        command = (
-            ["arp", "-a"] if platform.system().lower() == "windows" else ["arp", "-n"]
-        )
-
-        # Run the arp command and capture the output
-        output = subprocess.check_output(command, universal_newlines=True)
-
-        # Parse the output to extract the IP Addresses
-        for line in output.split("\n"):
-            if "-" in line or "at" in line:
-                parts = line.split()
-                ip = parts[0] if platform.system().lower() == "windows" else parts[1]
-                arp_table.append(ip)
-    except subprocess.CalledProcessError as e:
-        # Log ARP table retrieval failure
-        logging.error(f"Failed to retieve ARP table: {e}")
-
+        arp_request = ARP(pdst=str(network))
+        broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
+        arp_request_broadcast = broadcast / arp_request
+        answered_list = srp(arp_request_broadcast, timeout=5, verbose=False)[0]
+        for sent, received in answered_list:
+            arp_table.append({'ip': received.psrc, 'mac': received.hwsrc})
+    except Exception as e:
+        logging.error(f"Failed to retrieve ARP table: {e}")
     return arp_table
 
+# Function to get OS and device type using psutil
+def get_os_device_info(ip):
+    try:
+        for conn in psutil.net_connections(kind='inet'):
+            if conn.laddr.ip == ip:
+                return platform.system(), conn.pid
+    except Exception as e:
+        logging.error(f"Failed to get OS/device info for {ip}: {e}")
+    return None, None
+
+# Function to get hostname
+def get_hostname(ip):
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except socket.herror:
+        return None
+
+# Function to get open ports and service banners using nmap
+def get_open_ports(ip):
+    open_ports = []
+    service_banner = None
+    try:
+        nm = nmap.PortScanner()
+        nm.scan(ip, '1-1024')
+        for proto in nm[ip].all_protocols():
+            lport = nm[ip][proto].keys()
+            for port in lport:
+                open_ports.append(port)
+                service_banner = nm[ip][proto][port]['product']
+    except Exception as e:
+        logging.error(f"Failed to get open ports for {ip}: {e}")
+    return open_ports, service_banner
 
 # Function to scan a network range
 def scan_network(network):
-    ip_list = []
+    results = []
 
     try:
-        net = ipaddress.ip_network(network)  # Create an IP network object
+        net = ipaddress.ip_network(network)
     except ValueError:
-        # Log invalid network address
         logging.error("Invalid network address provided.")
-        return ip_list
+        return results
 
-    broadcast_ip = str(
-        net.broadcast_address
-    )  # Get the broadcast IP address of the network
-
-    # Use a thread pool to ping muliple IPs concurrently
+    broadcast_ip = str(net.broadcast_address)
     with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(ping_ip, net.hosts()))
+        ping_results = list(executor.map(ping_ip, net.hosts()))
 
-    # Collect IPs that responded to the ping
-    for ip, result in zip(net.hosts(), results):
-        if result:
-            ip_list.append(str(ip))
-            logging.info(f"Active IP found: {ip}")
+    arp_table = get_arp_table(network)
+    current_time = datetime.now()
 
-    # Retrieve and validate IPs from the ARP table
-    arp_table = get_arp_table()
-    for ip in arp_table:
-        try:
-            if (
-                ipaddress.ip_address(ip) in net
-                and ip != broadcast_ip
-                and ip not in ip_list
-            ):
-                ip_list.append(ip)
-                logging.info(f"Active IP found from ARP table: {ip}")
-        except ValueError:
+    for ip, is_active in zip(net.hosts(), ping_results):
+        if is_active:
+            ip_info = {
+                'ip': str(ip),
+                'is_active': is_active,
+                'os': None,
+                'hostname': get_hostname(str(ip)),
+                'latency': None,
+                'mac_address': None,
+                'device_type': None,
+                'open_ports': None,
+                'service_banner': None,
+                'device_registration_time': None,
+                'scan_time': current_time
+            }
+            results.append(ip_info)
+
+    for entry in arp_table:
+        ip = entry['ip']
+        mac_address = entry['mac']
+        if ip in [result['ip'] for result in results]:
             continue
+        os, device_type = get_os_device_info(ip)
+        open_ports, service_banner = get_open_ports(ip)
+        ip_info = {
+            'ip': ip,
+            'is_active': True,
+            'os': os,
+            'hostname': get_hostname(ip),
+            'latency': None,
+            'mac_address': mac_address,
+            'device_type': device_type,
+            'open_ports': open_ports,
+            'service_banner': service_banner,
+            'device_registration_time': None,
+            'scan_time': current_time
+        }
+        results.append(ip_info)
 
-    return ip_list
-
+    return results
 
 # Function to store IPs in SQLite database
 def store_ips(ip_list):
-    with sqlite3.connect(DB_NAME) as conn:  # Connect to SQLite database
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS active_ips (
+                ip TEXT UNIQUE,
+                is_active BOOLEAN,
+                os TEXT,
+                hostname TEXT,
+                latency REAL,
+                mac_address TEXT,
+                device_type TEXT,
+                open_ports TEXT,
+                service_banner TEXT,
+                device_registration_time TEXT,
+                scan_time TIMESTAMP
+            )
+        """)
 
-        # Create table if it doesn't exist
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS active_ips (ip TEXT UNIQUE, scanned_at TIMESTAMP)"""
-        )
-
-        # Insert each active IP address into the database
-        for ip in ip_list:
+        for ip_info in ip_list:
             try:
-                cursor.execute(
-                    "INSERT INTO active_ips (ip, scanned_at) VALUES (?, ?)",
-                    (ip, time.time()),
-                )
+                cursor.execute("""
+                    INSERT INTO active_ips (
+                        ip, is_active, os, hostname, latency, mac_address,
+                        device_type, open_ports, service_banner,
+                        device_registration_time, scan_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ip_info['ip'], ip_info['is_active'], ip_info['os'],
+                    ip_info['hostname'], ip_info['latency'], ip_info['mac_address'],
+                    ip_info['device_type'], ','.join(map(str, ip_info['open_ports'])),
+                    ip_info['service_banner'], ip_info['device_registration_time'],
+                    ip_info['scan_time']
+                ))
             except sqlite3.IntegrityError:
-                # Handle duplicate IP inseration attempt
-                logging.warning(f"Duplicate IP not inserted: {ip}")
+                logging.warning(f"Duplicate IP not inserted: {ip_info['ip']}")
 
+        conn.commit()
 
-    conn.commit()
-
+def get_stored_ips():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM active_ips")
+        rows = cursor.fetchall()
+    return rows
 
 def main():
     try:
@@ -156,9 +218,8 @@ def main():
         logging.info(f"Number of IPs found: {len(ip_list)}")
         logging.info(f"Active IPs: {ip_list}")
     except Exception as e:
-        logging.error("An error occured during the execution of the script", exc_info=True)
+        logging.error("An error occurred during the execution of the script", exc_info=True)
         raise
-
 
 if __name__ == "__main__":
     main()
